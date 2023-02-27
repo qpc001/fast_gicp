@@ -106,32 +106,52 @@ void FastVGICPCudaCore::swap_source_and_target() {
   create_target_voxelmap();
 }
 
+/**
+ * @brief 传入std::vector形式的点云，将数据保存到显存上的数据thrust::device_vector
+ * @param cloud
+ */
 void FastVGICPCudaCore::set_source_cloud(const std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>>& cloud) {
+  // 先构造thrust::host_vector，并以std::vector形式的点云作为数据输入
   thrust::host_vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> points(cloud.begin(), cloud.end());
+  // 检查source_points是否为空
   if(!source_points) {
     source_points.reset(new Points());
   }
 
+  // 将thrust::host_vector转成显存上的数据thrust::device_vector
   *source_points = points;
 }
 
+/**
+ * @brief 传入std::vector形式的点云，将数据保存到显存上的数据thrust::device_vector
+ * @param cloud
+ */
 void FastVGICPCudaCore::set_target_cloud(const std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>>& cloud) {
+  // 先构造thrust::host_vector，并以std::vector形式的点云作为数据输入
   thrust::host_vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> points(cloud.begin(), cloud.end());
   if(!target_points) {
     target_points.reset(new Points());
   }
 
+  // 将thrust::host_vector转成显存上的数据thrust::device_vector
   *target_points = points;
 }
 
+/**
+ * @brief 设置源点云的近邻点的索引，并且保存到显存设备上thrust::device_vector
+ * @param k
+ * @param neighbors
+ */
 void FastVGICPCudaCore::set_source_neighbors(int k, const std::vector<int>& neighbors) {
   assert(k * source_points->size() == neighbors.size());
+  // 首先在thrust::host_vector分配
   thrust::host_vector<int> k_neighbors(neighbors.begin(), neighbors.end());
 
   if(!source_neighbors) {
     source_neighbors.reset(new thrust::device_vector<int>());
   }
 
+  // 然后保存到thrust::device_vector显存设备上
   *source_neighbors = k_neighbors;
 }
 
@@ -152,9 +172,14 @@ struct untie_pair_second {
   }
 };
 
+/**
+ * @brief 对于源点云中的每个点x，遍历目标点云，找到关于源点云中的一个点x的目标点云近邻点索引，结果保存到成员变量
+ * @param k
+ */
 void FastVGICPCudaCore::find_source_neighbors(int k) {
   assert(source_points);
 
+  // 对于源点云中的每个点x，遍历目标点云，找到关于源点云中的一个点x的k个近邻点索引(在目标点云中的)，结果保存到k_neighbors
   thrust::device_vector<thrust::pair<float, int>> k_neighbors;
   brute_force_knn_search(*source_points, *source_points, k, k_neighbors);
 
@@ -163,6 +188,8 @@ void FastVGICPCudaCore::find_source_neighbors(int k) {
   } else {
     source_neighbors->resize(k_neighbors.size());
   }
+
+  // 对于k_neighbors中的每个元素，提取其second元素，保存到source_neighbors容器（显存上）
   thrust::transform(k_neighbors.begin(), k_neighbors.end(), source_neighbors->begin(), untie_pair_second());
 }
 
@@ -180,14 +207,22 @@ void FastVGICPCudaCore::find_target_neighbors(int k) {
   thrust::transform(k_neighbors.begin(), k_neighbors.end(), target_neighbors->begin(), untie_pair_second());
 }
 
+/**
+ * @brief 计算并重组协方差矩阵
+ * @param method
+ */
 void FastVGICPCudaCore::calculate_source_covariances(RegularizationMethod method) {
   assert(source_points && source_neighbors);
+  // 计算k值，即每个点有多少个对应的近邻点
   int k = source_neighbors->size() / source_points->size();
 
   if(!source_covariances) {
     source_covariances.reset(new thrust::device_vector<Eigen::Matrix3f>(source_points->size()));
   }
+
+  // 计算协方差，source_covariances的结果与source_points索引一一对应
   covariance_estimation(*source_points, k, *source_neighbors, *source_covariances);
+  // 对协方差进行regularization（默认使用平面性质，第三个特征值很小的特性）
   covariance_regularization(*source_points, *source_covariances, method);
 }
 

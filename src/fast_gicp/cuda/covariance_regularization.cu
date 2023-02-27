@@ -16,6 +16,7 @@ struct svd_kernel {
     const auto& mean = thrust::get<0>(input);
     const auto& cov = thrust::get<1>(input);
 
+    // 计算特征值、特征向量，注意：特征值按递增顺序排列，即eig.eigenvalues()[0]表示最小特征值
     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eig;
     eig.computeDirect(cov);
 
@@ -41,6 +42,12 @@ struct svd_reconstruction_kernel {
     const auto& vecs = thrust::get<2>(input);
     const auto idx = thrust::get<3>(input);
 
+    // 重组协方差矩阵：
+    // cov_regular = V Σ V^{-1}
+    // 其中，Σ =
+    // [ 0.001, 0.0,  0.0
+    //   0.0 ,  1.0,  0.0,
+    //   0.0 ,  0.0,  1.0]
     Eigen::Matrix3f vecs_inv = vecs.inverse();
     const auto& values_diag = *thrust::raw_pointer_cast(values_diag_ptr);
     Eigen::Matrix3f* cov = thrust::raw_pointer_cast(covariances_ptr) + idx;
@@ -101,17 +108,28 @@ struct covariance_regularization_mineig {
 
 }  // namespace
 
+/**
+ * @brief 对协方差进行regularization
+ * @param means
+ * @param covs
+ * @param method
+ */
 void covariance_regularization(thrust::device_vector<Eigen::Vector3f>& means, thrust::device_vector<Eigen::Matrix3f>& covs, RegularizationMethod method) {
+  // 对于fast-vgicp，默认使用RegularizationMethod::PLANE
   if (method == RegularizationMethod::PLANE) {
+    // 初始化 d_indices = {0,1,2,3...}
     thrust::device_vector<int> d_indices(covs.size());
     thrust::sequence(d_indices.begin(), d_indices.end());
+    // 迭代器打包（均值、方差、索引），并且添加调用svd_kernel进行转换，输出（均值、特征值、特征向量、索引）
     auto first = thrust::make_transform_iterator(thrust::make_zip_iterator(thrust::make_tuple(means.begin(), covs.begin(), d_indices.begin())), svd_kernel());
     auto last = thrust::make_transform_iterator(thrust::make_zip_iterator(thrust::make_tuple(means.end(), covs.end(), d_indices.end())), svd_kernel());
 
+    // 特征值按递增顺序排列
     Eigen::Matrix3f diag_matrix = Eigen::Vector3f(1e-3f, 1.0f, 1.0f).asDiagonal();
     thrust::device_vector<Eigen::Matrix3f> val(1);
     val[0] = diag_matrix;
     thrust::device_ptr<Eigen::Matrix3f> diag_matrix_ptr = val.data();
+    // 利用平面特性（第三个特征值很小）重组协方差矩阵
     thrust::for_each(first, last, svd_reconstruction_kernel(diag_matrix_ptr, covs));
 
   } else if (method == RegularizationMethod::FROBENIUS) {
